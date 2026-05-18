@@ -15,7 +15,6 @@ from datetime import datetime
 class MeetingCreate(BaseModel):
     status: Literal["ended", "in-progress"]
     title: str
-    user_id: str
 
 
 from shutil import ExecError
@@ -26,10 +25,9 @@ class MeetingTable:
     def __init__(self, supabase_client):
         self.client = supabase_client
 
-    async def create_new(self,user_id:str):
+    async def create_new(self):
 
         payload = {
-            "user_id": user_id,
             "title": f"Meeting {datetime.now(timezone.utc).isoformat()}",
             "status": "in_progress",
             "start_time": datetime.now(timezone.utc).isoformat(),

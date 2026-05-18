@@ -1,11 +1,10 @@
 from pydantic import BaseModel
-from shutil import ExecError
 
 
 class Insight(BaseModel):
     content: str
     segment_id: str
-    type:str
+    type: str
 
 
 class InsightsTable:
@@ -20,11 +19,10 @@ class InsightsTable:
                 .execute()
             )
 
-
             if not response.data:
-                raise ExecError("No row returned after insert")
+                raise RuntimeError("No row returned after insert")
 
             return response.data[0]
 
         except Exception as e:
-            raise ExecError(f"Failed to save insight: {e}")
+            raise RuntimeError(f"Failed to save insight: {e}") from e

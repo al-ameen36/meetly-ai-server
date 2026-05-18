@@ -1,3 +1,4 @@
+from app.models.insights import Insight
 from typing import Literal, Awaitable, Callable, Optional, Any
 from pydantic import BaseModel
 import json
@@ -73,7 +74,10 @@ class LLMClient:
                 },
                 {
                     "role": "user",
-                    "content": content,
+                    "content": (
+                        f"**Recent insights:**\n{recent_insights}"
+                        f"**Current segment to analyze**\n{content}"
+                        ),
                 },
             ],
         )

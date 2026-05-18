@@ -42,6 +42,8 @@ class RecentInsights:
         self._insights.append(insight)
 
     def get(self) -> str:
+        if len(self._insights ) ==0:
+            return ""
         return "\n".join(
             f"{item.type}: {item.content}" for item in self._insights
         )
@@ -77,7 +79,7 @@ async def websocket_endpoint(websocket: WebSocket):
     user = await get_current_user(websocket)
     print(f"User connected: {user.id}")
 
-    meeting_row = await meeting_table.create_new(user.id)
+    meeting_row = await meeting_table.create_new()
     meeting_id = meeting_row["id"]
 
     recent_insights = RecentInsights()
@@ -93,13 +95,13 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception:
                 break
 
-    async def save_insight(segment_id: str, insight_data: dict):
-        if not insight_data or insight_data.get("type") == "none":
+    async def save_insight(segment_id: str, insight):
+        if not insight or insight.type == "none":
             return
 
         insight_row = Insight(
-            content=insight_data.get("content", ""),
-            type=insight_data["type"],
+            content=insight.content,
+            type=insight.type,
             segment_id=segment_id,
             meeting_id=meeting_id,
         )
