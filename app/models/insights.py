@@ -1,18 +1,32 @@
 from pydantic import BaseModel
+from shutil import ExecError
 
 
 class Insight(BaseModel):
     content: str
-    segment_id: int
+    segment_id: str
 
 
 class InsightsTable:
     def __init__(self, supabase_client):
         self.client = supabase_client
 
-    async def insert(self, insight: Insight):
-
+    async def add(self, insight: Insight):
         try:
-            self.client.table("meeting_insights").insert(insight.model_dump()).execute()
+            print(insight.content)
+            print(insight.segment_id)
+            response = (
+                self.client.table("segments")
+                .update({"insights": insight.content})
+                .eq("id", insight.segment_id)
+                .execute()
+            )
+
+
+            if not response.data:
+                raise ExecError("No row returned after insert")
+
+            return response.data[0]
+
         except Exception as e:
-            raise Exception(f"Failed to save meeting insights: {e}")
+            raise ExecError(f"Failed to save insight: {e}")

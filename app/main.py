@@ -1,60 +1,58 @@
-from app.llm import LLMClient
-from app.memory import TranscriptBuffer
-from app.models.meeting import MeetingTable
-from contextlib import suppress
 import asyncio
 import json
+from contextlib import suppress
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    WebSocket,
+    WebSocketDisconnect,
+    WebSocketException,
+    status,
+)
 
 from speechmatics.rt import (
     AsyncClient,
     ServerMessageType,
 )
 
-from app.db import supabase_client
-from app.speech import (
-    audio_format,
-    speechmatics_config,
-    SPEECHMATICS_SECRET,
-)
+from app.utils.db import supabase_client
+from app.utils.llm import LLMClient
+from app.utils.memory import TranscriptBuffer
+from app.models.insights import Insight, InsightsTable
+from app.models.meeting import MeetingTable
+from app.models.segments import Segment, SegmentsTable
+from app.utils.speech import audio_format, speechmatics_config, SPEECHMATICS_SECRET
 
 load_dotenv()
 
 app = FastAPI()
-llm = LLMClient()
 
 
 async def get_current_user(websocket: WebSocket):
     await websocket.accept()
 
-    auth_message = await websocket.receive_text()
-
     try:
-        data = json.loads(auth_message)
+        raw = await websocket.receive_text()
+        data = json.loads(raw)
     except Exception:
-        await websocket.close(code=1008)
-        raise WebSocketDisconnect()
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
 
     token = data.get("token")
-
     if not token:
-        await websocket.close(code=1008)
-        raise WebSocketDisconnect()
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
 
     try:
         result = supabase_client.auth.get_user(token)
         user = result.user
     except Exception:
-        await websocket.close(code=1008)
-        raise WebSocketDisconnect()
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
 
     if not user:
-        await websocket.close(code=1008)
-        raise WebSocketDisconnect()
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
 
-    print(f"User: {user.id} connected")
+    print(f"User connected: {user.id}")
     return user
 
 
@@ -64,9 +62,48 @@ async def websocket_endpoint(
     user=Depends(get_current_user),
 ):
     meeting = MeetingTable(supabase_client, user_id=user.id)
-    await meeting.create_new()
+    meeting_row = await meeting.create_new()
 
-    transcript_buffer = TranscriptBuffer(on_flush=llm.generate_insights)
+    transcript_segments = SegmentsTable(supabase_client)
+    insights_table = InsightsTable(supabase_client)
+
+    llm_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+
+    async def save_insight(segment_id: str, insight_text: str):
+        await insights_table.add(
+            Insight(
+                content=insight_text,
+                segment_id=segment_id,
+                meeting_id=meeting.id,
+            )
+        )
+
+    llm = LLMClient(on_insight=save_insight)
+
+    async def llm_worker():
+        while True:
+            segment_id, content = await llm_queue.get()
+            try:
+                await llm.generate_insights(segment_id, content)
+            except Exception as e:
+                print("Failed to extract or save insights:", e)
+            finally:
+                llm_queue.task_done()
+
+    worker_task = asyncio.create_task(llm_worker())
+
+    async def on_flush(segment: Segment):
+        new_segment = await transcript_segments.add(segment)
+        segment_id = new_segment["id"]
+
+        await llm_queue.put((segment_id, segment.content))
+
+    transcript_buffer = TranscriptBuffer(
+        meeting_id=meeting.id,
+        on_flush=on_flush,
+        timeout=6.0,
+        char_limit=600,
+    )
 
     outgoing: asyncio.Queue[str] = asyncio.Queue()
 
@@ -85,9 +122,17 @@ async def websocket_endpoint(
 
             @client.on(ServerMessageType.ADD_TRANSCRIPT)
             def handle_final(msg):
-                text = msg.get("metadata", {}).get("transcript", "")
+                metadata = msg.get("metadata", {})
+                text = (metadata.get("transcript") or "").strip()
+
                 if text:
-                    asyncio.create_task(transcript_buffer.add_text(text))
+                    segment = Segment(
+                        content=text,
+                        meeting_id=meeting.id,
+                        start_time=float(metadata.get("start_time") or 0.0),
+                        end_time=float(metadata.get("end_time") or 0.0),
+                    )
+                    asyncio.create_task(transcript_buffer.add(segment))
 
                 push(msg)
 
@@ -106,24 +151,23 @@ async def websocket_endpoint(
                 if message["type"] == "websocket.disconnect":
                     break
 
-                # text frame
-                if "text" in message and message["text"] is not None:
+                if message.get("text") is not None:
                     continue
 
-                # binary audio frame
                 chunk = message.get("bytes")
-
                 if chunk:
                     await client.send_audio(chunk)
 
     except WebSocketDisconnect:
         pass
-
     except Exception as e:
         print("WebSocket error:", e)
-
     finally:
         sender_task.cancel()
+        worker_task.cancel()
 
         with suppress(asyncio.CancelledError):
             await sender_task
+
+        with suppress(asyncio.CancelledError):
+            await worker_task
