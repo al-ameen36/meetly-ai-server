@@ -23,21 +23,13 @@ from datetime import datetime, timezone
 
 
 class MeetingTable:
-    def __init__(self, supabase_client, user_id: str):
+    def __init__(self, supabase_client):
         self.client = supabase_client
-        self.user_id = user_id
-        self.id = None
 
-    async def create_new(self):
-        meeting_id = self.id
-
-        if not meeting_id:
-            meeting_id = str(__import__("uuid").uuid4())
-            self.id = meeting_id
+    async def create_new(self,user_id:str):
 
         payload = {
-            "id": meeting_id,
-            "user_id": self.user_id,
+            "user_id": user_id,
             "title": f"Meeting {datetime.now(timezone.utc).isoformat()}",
             "status": "in_progress",
             "start_time": datetime.now(timezone.utc).isoformat(),

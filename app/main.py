@@ -29,6 +29,13 @@ load_dotenv()
 
 app = FastAPI()
 
+# ---------------------------------------------------------------------------
+# Stateless singletons — safe to share across all connections
+# ---------------------------------------------------------------------------
+meeting_table = MeetingTable(supabase_client)
+transcript_segments = SegmentsTable(supabase_client)
+insights_table = InsightsTable(supabase_client)
+
 
 async def get_current_user(websocket: WebSocket):
     await websocket.accept()
@@ -61,24 +68,22 @@ async def websocket_endpoint(
     websocket: WebSocket,
     user=Depends(get_current_user),
 ):
-    meeting = MeetingTable(supabase_client, user_id=user.id)
-    meeting_row = await meeting.create_new()
-
-    transcript_segments = SegmentsTable(supabase_client)
-    insights_table = InsightsTable(supabase_client)
-
-    llm_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+    # Per-connection state — scoped here so each user is fully isolated
+    meeting_row = await meeting_table.create_new(user.id)
+    meeting_id = meeting_row["id"]
 
     async def save_insight(segment_id: str, insight_text: str):
         await insights_table.add(
             Insight(
                 content=insight_text,
                 segment_id=segment_id,
-                meeting_id=meeting.id,
+                meeting_id=meeting_id,
             )
         )
 
-    llm = LLMClient(on_insight=save_insight)
+    llm = LLMClient(on_insight=save_insight)  
+
+    llm_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
 
     async def llm_worker():
         while True:
@@ -90,16 +95,13 @@ async def websocket_endpoint(
             finally:
                 llm_queue.task_done()
 
-    worker_task = asyncio.create_task(llm_worker())
-
     async def on_flush(segment: Segment):
         new_segment = await transcript_segments.add(segment)
         segment_id = new_segment["id"]
-
         await llm_queue.put((segment_id, segment.content))
 
     transcript_buffer = TranscriptBuffer(
-        meeting_id=meeting.id,
+        meeting_id=meeting_id,
         on_flush=on_flush,
         timeout=6.0,
         char_limit=600,
@@ -112,7 +114,9 @@ async def websocket_endpoint(
             payload = await outgoing.get()
             await websocket.send_text(payload)
 
+    # Per-connection and cleaned up on disconnect
     sender_task = asyncio.create_task(sender())
+    worker_task = asyncio.create_task(llm_worker())
 
     try:
         async with AsyncClient(api_key=SPEECHMATICS_SECRET) as client:
@@ -128,7 +132,7 @@ async def websocket_endpoint(
                 if text:
                     segment = Segment(
                         content=text,
-                        meeting_id=meeting.id,
+                        meeting_id=meeting_id,
                         start_time=float(metadata.get("start_time") or 0.0),
                         end_time=float(metadata.get("end_time") or 0.0),
                     )

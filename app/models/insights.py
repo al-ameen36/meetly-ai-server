@@ -13,8 +13,6 @@ class InsightsTable:
 
     async def add(self, insight: Insight):
         try:
-            print(insight.content)
-            print(insight.segment_id)
             response = (
                 self.client.table("segments")
                 .update({"insights": insight.content})
