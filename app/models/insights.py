@@ -5,6 +5,7 @@ from shutil import ExecError
 class Insight(BaseModel):
     content: str
     segment_id: str
+    type:str
 
 
 class InsightsTable:
@@ -14,9 +15,8 @@ class InsightsTable:
     async def add(self, insight: Insight):
         try:
             response = (
-                self.client.table("segments")
-                .update({"insights": insight.content})
-                .eq("id", insight.segment_id)
+                self.client.table("insights")
+                .insert(insight.model_dump())
                 .execute()
             )
 

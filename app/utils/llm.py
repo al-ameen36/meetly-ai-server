@@ -1,4 +1,9 @@
+from typing import Literal, Awaitable, Callable, Optional, Any
+from pydantic import BaseModel
+import json
 import os
+import re
+
 from openai import AsyncOpenAI
 
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL")
@@ -17,23 +22,53 @@ client = AsyncOpenAI(
 )
 
 
+class InsightResponse(BaseModel):
+    type: Literal[
+        "action_item",
+        "decision",
+        "risk",
+        "follow_up",
+        "update",
+        "none",
+    ]
+    content: str = ""
+
+
+def _clean_raw_json(raw: str) -> str:
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+
+    # Remove fenced blocks if the model adds them
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+
+    return raw.strip()
+
+
 class LLMClient:
-    def __init__(self, on_insight):
+    def __init__(
+        self,
+        on_insight: Optional[Callable[[str, dict[str, Any]], Awaitable[None]]] = None,
+    ):
         self.client = client
         self.on_insight = on_insight
 
-    async def generate_insights(self, segment_id: str, content: str):
+    async def generate_insights(self, segment_id: str, content: str,recent_insights:str) -> Optional[dict]:
         response = await self.client.chat.completions.create(
             model=OPENAI_MODEL,
+            temperature=0.3,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are a specialized meeting assistant. "
-                        "Extract any key insights, action items, decisions, risks, "
-                        "or follow-ups from the transcript segment. "
-                        "If there is nothing useful, return an empty string. "
-                        "Be extremely concise."
+                        "You are a meeting intelligence system.\n"
+                        "Return ONLY valid JSON.\n"
+                        "Do NOT use markdown.\n"
+                        "Do NOT wrap in code fences.\n\n"
+                        "Schema:\n"
+                        '{ "type": "action_item|decision|risk|follow_up|update|none", "content": "string" }\n\n'
+                        'If nothing useful exists, return { "type": "none", "content": "" }.'
                     ),
                 },
                 {
@@ -41,12 +76,35 @@ class LLMClient:
                     "content": content,
                 },
             ],
-            temperature=0.3,
         )
 
-        insight_text = (response.choices[0].message.content or "").strip()
+        raw = _clean_raw_json(response.choices[0].message.content or "")
+        if not raw:
+            return None
 
-        if insight_text:
-            await self.on_insight(segment_id, insight_text)
+        try:
+            parsed_json = json.loads(raw)
+        except Exception as e:
+            print("Failed to parse insight JSON:", e)
+            print("RAW RESPONSE:", raw)
+            return None
 
-        return insight_text
+        if not isinstance(parsed_json, dict):
+            print("Insight response was not a JSON object:", parsed_json)
+            return None
+
+        if "type" not in parsed_json:
+            print("Missing type field:", parsed_json)
+            return None
+
+        try:
+            parsed = InsightResponse.model_validate(parsed_json)
+        except Exception as e:
+            print("Failed to validate insight JSON:", e)
+            print("RAW PARSED JSON:", parsed_json)
+            return None
+
+        if parsed.type != "none" and self.on_insight:
+            await self.on_insight(segment_id,parsed)
+
+        return parsed
