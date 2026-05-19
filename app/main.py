@@ -153,6 +153,7 @@ async def websocket_endpoint(websocket: WebSocket):
         on_flush=on_flush,
         timeout=6.0,
         char_limit=600,
+        user_id=user.id
     )
 
     async def segment_worker():

@@ -8,11 +8,13 @@ class TranscriptBuffer:
     def __init__(
         self,
         meeting_id: str,
+        user_id:str,
         on_flush: Callable[[Segment], Awaitable[None]],
         timeout: float = 6.0,
         char_limit: int = 600,
     ):
         self.meeting_id = meeting_id
+        self.user_id = user_id
         self.on_flush = on_flush
         self.timeout = timeout
         self.char_limit = char_limit
@@ -82,6 +84,7 @@ class TranscriptBuffer:
             meeting_id=self.meeting_id,
             start_time=self.start_time or 0.0,
             end_time=self.end_time or 0.0,
+            user_id=self.user_id
         )
 
         self.buffer = ""
