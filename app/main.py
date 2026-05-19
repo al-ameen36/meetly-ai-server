@@ -79,7 +79,7 @@ async def websocket_endpoint(websocket: WebSocket):
     user = await get_current_user(websocket)
     print(f"User connected: {user.id}")
 
-    meeting_row = await meeting_table.create_new()
+    meeting_row = await meeting_table.create_new(user.id)
     meeting_id = meeting_row["id"]
 
     recent_insights = RecentInsights()
@@ -103,7 +103,7 @@ async def websocket_endpoint(websocket: WebSocket):
             content=insight.content,
             type=insight.type,
             segment_id=segment_id,
-            meeting_id=meeting_id,
+            user_id=user.id,
         )
 
         saved = await insights_table.add(insight_row)
@@ -188,6 +188,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             Segment(
                                 content=text,
                                 meeting_id=meeting_id,
+                                user_id=user.id,
                                 start_time=float(metadata.get("start_time") or 0.0),
                                 end_time=float(metadata.get("end_time") or 0.0),
                             )

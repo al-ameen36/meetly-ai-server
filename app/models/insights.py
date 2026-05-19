@@ -4,6 +4,7 @@ from pydantic import BaseModel
 class Insight(BaseModel):
     content: str
     segment_id: str
+    user_id:str
     type: str
 
 
@@ -11,7 +12,7 @@ class InsightsTable:
     def __init__(self, supabase_client):
         self.client = supabase_client
 
-    async def add(self, insight: Insight):
+    async def add(self,insight: Insight):
         try:
             response = (
                 self.client.table("insights")

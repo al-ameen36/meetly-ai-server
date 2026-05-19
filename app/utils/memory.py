@@ -1,5 +1,6 @@
 import asyncio
 from typing import Awaitable, Callable, Optional
+
 from app.models.segments import Segment
 
 
@@ -22,7 +23,6 @@ class TranscriptBuffer:
 
         self.lock = asyncio.Lock()
         self.timer_task: asyncio.Task | None = None
-
         self.force_flush_pending = False
 
     async def add(self, segment: Segment):
@@ -52,9 +52,6 @@ class TranscriptBuffer:
 
     def _can_flush_now(self, latest_text: str) -> bool:
         sentence_end = latest_text.endswith((".", "?", "!"))
-
-        # Only flush on sentence end if we've hit the char limit.
-        # Everything else is handled by the timeout timer.
         return self.force_flush_pending and sentence_end
 
     def _restart_timer(self):
@@ -80,7 +77,7 @@ class TranscriptBuffer:
         if not text:
             return
 
-        segment = Segment(
+        flushed_segment = Segment(
             content=text,
             meeting_id=self.meeting_id,
             start_time=self.start_time or 0.0,
@@ -91,4 +88,4 @@ class TranscriptBuffer:
         self.start_time = None
         self.end_time = None
 
-        await self.on_flush(segment)
+        await self.on_flush(flushed_segment)

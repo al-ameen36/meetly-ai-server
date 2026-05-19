@@ -25,9 +25,10 @@ class MeetingTable:
     def __init__(self, supabase_client):
         self.client = supabase_client
 
-    async def create_new(self):
+    async def create_new(self,user_id:str):
 
         payload = {
+            "user_id": user_id,
             "title": f"Meeting {datetime.now(timezone.utc).isoformat()}",
             "status": "in_progress",
             "start_time": datetime.now(timezone.utc).isoformat(),

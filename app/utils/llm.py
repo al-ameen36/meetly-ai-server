@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import json
 import os
 import re
+from difflib import SequenceMatcher
 
 from openai import AsyncOpenAI
 
@@ -22,13 +23,17 @@ client = AsyncOpenAI(
     base_url=OPENAI_API_BASE_URL or None,
 )
 
+# Similarity threshold: 0.0 = no match, 1.0 = exact match.
+# 0.8 catches rephrased duplicates while allowing genuinely new insights through.
+DEDUP_SIMILARITY_THRESHOLD = 0.8
+
 
 class InsightResponse(BaseModel):
     type: Literal[
         "action_item",
         "decision",
         "risk",
-        "follow_up",
+        "task",
         "update",
         "none",
     ]
@@ -40,11 +45,24 @@ def _clean_raw_json(raw: str) -> str:
     if not raw:
         return ""
 
-    # Remove fenced blocks if the model adds them
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
     return raw.strip()
+
+
+def _is_duplicate(new_content: str, recent_insights: list[InsightResponse], threshold: float) -> bool:
+    """
+    Returns True if new_content is too similar to any previously emitted insight.
+    Uses SequenceMatcher for fuzzy comparison so rephrased duplicates are caught.
+    """
+    new_normalized = new_content.strip().lower()
+    for insight in recent_insights:
+        existing_normalized = insight.content.strip().lower()
+        ratio = SequenceMatcher(None, new_normalized, existing_normalized).ratio()
+        if ratio >= threshold:
+            return True
+    return False
 
 
 class LLMClient:
@@ -54,8 +72,15 @@ class LLMClient:
     ):
         self.client = client
         self.on_insight = on_insight
+        # Keeps a rolling list of emitted InsightResponse objects for deduplication.
+        self._emitted: list[InsightResponse] = []
 
-    async def generate_insights(self, segment_id: str, content: str,recent_insights:str) -> Optional[dict]:
+    async def generate_insights(
+        self,
+        segment_id: str,
+        content: str,
+        recent_insights: str,
+    ) -> Optional[InsightResponse]:
         response = await self.client.chat.completions.create(
             model=OPENAI_MODEL,
             temperature=0.3,
@@ -68,16 +93,19 @@ class LLMClient:
                         "Do NOT use markdown.\n"
                         "Do NOT wrap in code fences.\n\n"
                         "Schema:\n"
-                        '{ "type": "action_item|decision|risk|follow_up|update|none", "content": "string" }\n\n'
-                        'If nothing useful exists, return { "type": "none", "content": "" }.'
+                        '{ "type": "action_item|decision|risk|task|update|none", "content": "string" }\n\n'
+                        'If nothing useful exists, return { "type": "none", "content": "" }.\n\n'
+                        "IMPORTANT: The recent insights below have already been captured. "
+                        "Do NOT repeat or rephrase any of them. "
+                        "Only return something new and distinct, or return none."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        f"**Recent insights:**\n{recent_insights}"
-                        f"**Current segment to analyze**\n{content}"
-                        ),
+                        f"**Recent insights (do not repeat these):**\n{recent_insights}\n\n"
+                        f"**Current segment to analyze:**\n{content}"
+                    ),
                 },
             ],
         )
@@ -108,7 +136,18 @@ class LLMClient:
             print("RAW PARSED JSON:", parsed_json)
             return None
 
-        if parsed.type != "none" and self.on_insight:
-            await self.on_insight(segment_id,parsed)
+        if parsed.type == "none":
+            return parsed
+
+        # Structural deduplication — catches cases where the prompt instruction alone
+        # wasn't enough (e.g. model rephrased an existing insight).
+        if _is_duplicate(parsed.content, self._emitted, DEDUP_SIMILARITY_THRESHOLD):
+            print("Duplicate insight suppressed:", parsed.content)
+            return None
+
+        self._emitted.append(parsed)
+
+        if self.on_insight:
+            await self.on_insight(segment_id, parsed)
 
         return parsed

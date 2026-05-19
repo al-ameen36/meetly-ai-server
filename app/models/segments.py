@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 class Segment(BaseModel):
     content: str
+    user_id:str
     meeting_id: str
     start_time: float
     end_time: float
